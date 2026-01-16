@@ -4,7 +4,33 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 
-st.set_page_config(page_title="Финансы Холдинга", layout="wide")
+# --- АВТОРИЗАЦИЯ ---
+def check_password():
+    def password_entered():
+        if st.session_state["username"] in st.secrets["passwords"] and \
+           st.session_state["password"] == st.secrets["passwords"][st.session_state["username"]]:
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # удаляем пароль из памяти
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        st.text_input("Логин", on_change=password_entered, key="username")
+        st.text_input("Пароль", type="password", on_change=password_entered, key="password")
+        return False
+    elif not st.session_state["password_correct"]:
+        st.text_input("Логин", on_change=password_entered, key="username")
+        st.text_input("Пароль", type="password", on_change=password_entered, key="password")
+        st.error("😕 Неверный логин или пароль")
+        return False
+    else:
+        return True
+
+if not check_password():
+    st.stop()
+
+# --- ОСНОВНОЙ КОД ПРИЛОЖЕНИЯ (выполняется только после входа) ---
+role = st.session_state["username"]
 
 @st.cache_resource
 def get_connection():
@@ -12,17 +38,17 @@ def get_connection():
     creds_dict = dict(st.secrets["gcp_service_account"])
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client = gspread.authorize(creds)
-    # Убедитесь, что название таблицы совпадает!
     return client.open("Finance_DB")
 
 doc = get_connection()
 sheet_data = doc.worksheet("data")
 sheet_report = doc.worksheet("report")
 
-st.title("💰 Управление холдингом: ПП / Ш / Д")
+st.title(f"💰 Управление холдингом (Роль: {role})")
 
-# ВВОД ДАННЫХ
+# ЛОГИКА ВВОДА (Доступна и Админу, и Ассистенту)
 with st.sidebar:
+    st.write(f"Вы вошли как: **{role}**")
     mode = st.radio("Тип операции", ["Обычный Приход/Расход", "Внутренний перевод"])
     
     with st.form("main_form", clear_on_submit=True):
@@ -43,45 +69,42 @@ with st.sidebar:
                 st.success("Данные внесены")
                 st.cache_data.clear()
 
-        else:  # ВНУТРЕННИЙ ПЕРЕВОД
+        else: # ВНУТРЕННИЙ ПЕРЕВОД
             source = st.selectbox("ОТКУДА (Списание)", ["ООО ПП", "ИП Ш", "ИП Д", "Наличные"])
             target = st.selectbox("КУДА (Пополнение)", ["ИП Ш", "ООО ПП", "ИП Д", "Наличные"])
             amount = st.number_input("Сумма перевода (₽)", min_value=0, step=1000)
             comms = st.text_area("Комментарий к переводу")
             
             if st.form_submit_button("Выполнить перевод"):
-                if source == target:
-                    st.error("Компании должны быть разными!")
+                if source == target: st.error("Компании должны быть разными!")
                 else:
-                    # Создаем две строки одновременно
                     row_out = [date, source, "Внутренний перевод", "Внутренний", 0, amount, f"Перевод в {target}: {comms}"]
                     row_in = [date, target, "Внутренний перевод", "Внутренний", amount, 0, f"Приход из {source}: {comms}"]
                     sheet_data.append_rows([row_out, row_in])
-                    st.success(f"Перевод {amount}₽ из {source} в {target} выполнен")
+                    st.success(f"Перевод выполнен")
                     st.cache_data.clear()
 
-# ДАШБОРД
-def load_report():
-    # Читаем данные напрямую из листа report (ячейки B8 или где у вас итого)
-    vals = sheet_report.get_all_values()
-    # Чистая прибыль из ячейки E7 (в Python это индекс [6][4])
-    profit = vals[6][4] 
-    # Остаток в кассе из ячейки B8 (в Python это [7][1])
-    cash = vals[7][1]
-    # Выручка из ячейки E2 ([1][4])
-    revenue = vals[1][4]
-    return revenue, profit, cash
+# ДАШБОРД (ТОЛЬКО ДЛЯ АДМИНА)
+if role == "admin":
+    def load_report():
+        vals = sheet_report.get_all_values()
+        revenue = vals[1][4]
+        profit = vals[6][4] 
+        cash = vals[7][1]
+        return revenue, profit, cash
 
-try:
-    rev, prof, cash = load_report()
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Выручка (Холдинг)", f"{rev} ₽")
-    c2.metric("Чистая прибыль", f"{prof} ₽")
-    c3.metric("Остаток в кассе (из Таблицы)", f"{cash} ₽")
-except:
-    st.warning("Не удалось подтянуть данные из листа report. Проверьте структуру ячеек.")
+    try:
+        rev, prof, cash = load_report()
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Выручка (Холдинг)", f"{rev} ₽")
+        c2.metric("Чистая прибыль", f"{prof} ₽")
+        c3.metric("Остаток в кассе", f"{cash} ₽")
+    except:
+        st.warning("Проверьте структуру листа report!")
 
-st.divider()
-st.subheader("Последние операции")
-all_data = pd.DataFrame(sheet_data.get_all_records())
-st.dataframe(all_data.tail(10), use_container_width=True)
+    st.divider()
+    st.subheader("Последние операции")
+    all_data = pd.DataFrame(sheet_data.get_all_records())
+    st.dataframe(all_data.tail(15), use_container_width=True)
+else:
+    st.info("👋 Привет! У тебя доступ на добавление операций. Статистика доступна только руководителю.")
