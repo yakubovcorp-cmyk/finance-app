@@ -77,7 +77,7 @@ sheet_report = doc.worksheet("report")
 # --- ЗАГОЛОВОК И КНОПКА ОБНОВЛЕНИЯ ---
 col_t1, col_t2 = st.columns([4, 1])
 with col_t1:
-    st.title(f"📊 Холдинг: ПП / Ш / Д")
+    st.title(f"📊 ДДС")
 with col_t2:
     if st.button("🔄 Обновить данные"):
         st.cache_data.clear()
