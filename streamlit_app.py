@@ -4,13 +4,16 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 
+# --- НАСТРОЙКИ СТРАНИЦЫ ---
+st.set_page_config(page_title="Управление холдингом", layout="wide")
+
 # --- АВТОРИЗАЦИЯ ---
 def check_password():
     def password_entered():
         if st.session_state["username"] in st.secrets["passwords"] and \
            st.session_state["password"] == st.secrets["passwords"][st.session_state["username"]]:
             st.session_state["password_correct"] = True
-            del st.session_state["password"]  # удаляем пароль из памяти
+            del st.session_state["password"]
         else:
             st.session_state["password_correct"] = False
 
@@ -19,19 +22,16 @@ def check_password():
         st.text_input("Пароль", type="password", on_change=password_entered, key="password")
         return False
     elif not st.session_state["password_correct"]:
-        st.text_input("Логин", on_change=password_entered, key="username")
-        st.text_input("Пароль", type="password", on_change=password_entered, key="password")
         st.error("😕 Неверный логин или пароль")
         return False
-    else:
-        return True
+    return True
 
 if not check_password():
     st.stop()
 
-# --- ОСНОВНОЙ КОД ПРИЛОЖЕНИЯ (выполняется только после входа) ---
 role = st.session_state["username"]
 
+# --- ПОДКЛЮЧЕНИЕ К GOOGLE ---
 @st.cache_resource
 def get_connection():
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
@@ -44,67 +44,83 @@ doc = get_connection()
 sheet_data = doc.worksheet("data")
 sheet_report = doc.worksheet("report")
 
-st.title(f"💰 Управление холдингом (Роль: {role})")
+# --- ЛОГИКА ВВОДА ДАННЫХ ---
+st.title(f"📊 Панель управления (Роль: {role})")
 
-# ЛОГИКА ВВОДА (Доступна и Админу, и Ассистенту)
 with st.sidebar:
-    st.write(f"Вы вошли как: **{role}**")
-    mode = st.radio("Тип операции", ["Обычный Приход/Расход", "Внутренний перевод"])
+    st.header("➕ Новая запись")
+    mode = st.radio("Тип операции", ["Обычная", "Внутренний перевод"])
     
     with st.form("main_form", clear_on_submit=True):
         date = str(st.date_input("Дата", datetime.now()))
         
-        if mode == "Обычный Приход/Расход":
-            company = st.selectbox("Юрлицо", ["ООО ПП", "ИП Ш", "ИП Д", "Наличные"])
-            category = st.selectbox("Категория", ["Приход (Выручка)", "Закуп товара (Китай)", "Закуп (РФ)", "Маркетинг (Директ/Авито)", "ФОТ (Зарплаты)", "Аренда/Офис", "Налоги", "Вывод средств/Личное"])
+        if mode == "Обычная":
+            company = st.selectbox("Компания", ["ПП", "Ш", "Д", "Нал"])
+            category = st.selectbox("Категория", ["Выручка", "Закуп товара", "Маркетинг", "ФОТ", "Аренда", "Налоги", "Комиссии", "Личное"])
             op_type = st.radio("Движение", ["Расход", "Приход"])
             amount = st.number_input("Сумма (₽)", min_value=0, step=1000)
             project = st.text_input("Проект")
             comms = st.text_area("Комментарий")
             
-            if st.form_submit_button("Записать"):
+            if st.form_submit_button("Сохранить"):
                 inc = amount if op_type == "Приход" else 0
                 exp = amount if op_type == "Расход" else 0
                 sheet_data.append_row([date, company, category, project, inc, exp, comms])
-                st.success("Данные внесены")
+                st.success("Данные отправлены в журнал")
                 st.cache_data.clear()
 
-        else: # ВНУТРЕННИЙ ПЕРЕВОД
-            source = st.selectbox("ОТКУДА (Списание)", ["ООО ПП", "ИП Ш", "ИП Д", "Наличные"])
-            target = st.selectbox("КУДА (Пополнение)", ["ИП Ш", "ООО ПП", "ИП Д", "Наличные"])
-            amount = st.number_input("Сумма перевода (₽)", min_value=0, step=1000)
-            comms = st.text_area("Комментарий к переводу")
+        else:  # Внутренний перевод
+            source = st.selectbox("ОТКУДА", ["ПП", "Ш", "Д", "Нал"])
+            target = st.selectbox("КУДА", ["Ш", "ПП", "Д", "Нал"])
+            amount = st.number_input("Сумма (₽)", min_value=0)
+            comms = st.text_area("Комментарий")
             
             if st.form_submit_button("Выполнить перевод"):
-                if source == target: st.error("Компании должны быть разными!")
+                if source == target: st.error("Ошибка: выберите разные компании")
                 else:
-                    row_out = [date, source, "Внутренний перевод", "Внутренний", 0, amount, f"Перевод в {target}: {comms}"]
-                    row_in = [date, target, "Внутренний перевод", "Внутренний", amount, 0, f"Приход из {source}: {comms}"]
-                    sheet_data.append_rows([row_out, row_in])
-                    st.success(f"Перевод выполнен")
+                    rows = [
+                        [date, source, "Внутренний перевод", "Перевод", 0, amount, f"В {target}: {comms}"],
+                        [date, target, "Внутренний перевод", "Перевод", amount, 0, f"Из {source}: {comms}"]
+                    ]
+                    sheet_data.append_rows(rows)
+                    st.success("Перевод зафиксирован")
                     st.cache_data.clear()
 
-# ДАШБОРД (ТОЛЬКО ДЛЯ АДМИНА)
+# --- АНАЛИТИКА (ТОЛЬКО ДЛЯ ADMIN) ---
 if role == "admin":
-    def load_report():
-        vals = sheet_report.get_all_values()
-        revenue = vals[1][4]
-        profit = vals[6][4] 
-        cash = vals[7][1]
-        return revenue, profit, cash
-
+    # Загружаем отчет из Google
+    report_data = sheet_report.get_all_values()
+    df_rep = pd.DataFrame(report_data[1:], columns=report_data[0])
+    
+    # 1. Верхние метрики (Текущий месяц)
+    st.subheader("📍 Результаты за текущий месяц")
+    
+    # Ищем строку "Чистая прибыль" и берем колонку "Тек. Месяц"
     try:
-        rev, prof, cash = load_report()
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Выручка (Холдинг)", f"{rev} ₽")
-        c2.metric("Чистая прибыль", f"{prof} ₽")
-        c3.metric("Остаток в кассе", f"{cash} ₽")
-    except:
-        st.warning("Проверьте структуру листа report!")
+        def get_val(metric_name, period="Тек. Месяц"):
+            val = df_rep.loc[df_rep['Метрика'] == metric_name, period].values[0]
+            return val if val else "0"
 
-    st.divider()
-    st.subheader("Последние операции")
-    all_data = pd.DataFrame(sheet_data.get_all_records())
-    st.dataframe(all_data.tail(15), use_container_width=True)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Выручка", f"{get_val('Выручка')} ₽")
+        c2.metric("Прибыль", f"{get_val('ЧИСТАЯ ПРИБЫЛЬ')} ₽")
+        c3.metric("Остаток (Cash)", f"{get_val('ОСТАТОК В КАССЕ', 'Тек. Неделя')} ₽")
+
+        st.divider()
+
+        # 2. Сравнение периодов
+        st.subheader("📈 Сравнение по периодам")
+        # Показываем таблицу без лишних колонок
+        st.table(df_rep.set_index('Метрика'))
+        
+    except Exception as e:
+        st.error(f"Ошибка чтения report: {e}. Убедитесь, что названия метрик в таблице совпадают с кодом.")
+
+    # 3. Журнал последних операций
+    st.subheader("📜 Последние 10 записей")
+    raw_logs = sheet_data.get_all_records()
+    if raw_logs:
+        st.dataframe(pd.DataFrame(raw_logs).tail(10), use_container_width=True)
+
 else:
-    st.info("👋 Привет! У тебя доступ на добавление операций. Статистика доступна только руководителю.")
+    st.info("👋 Доступ ограничен. Вы можете вносить данные в левом меню. Аналитика доступна только руководителю.")
