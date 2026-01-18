@@ -7,29 +7,47 @@ from datetime import datetime
 # --- НАСТРОЙКИ СТРАНИЦЫ ---
 st.set_page_config(page_title="Управление холдингом", layout="wide")
 
-# --- АВТОРИЗАЦИЯ ---
+# --- АВТОРИЗАЦИЯ С ОГРАНИЧЕНИЕМ ПОПЫТОК ---
 def check_password():
-    def password_entered():
-        if st.session_state["username"] in st.secrets["passwords"] and \
-           st.session_state["password"] == st.secrets["passwords"][st.session_state["username"]]:
-            st.session_state["password_correct"] = True
-            del st.session_state["password"]
-        else:
-            st.session_state["password_correct"] = False
-
+    # Инициализация счетчика попыток, если его еще нет
+    if "login_attempts" not in st.session_state:
+        st.session_state["login_attempts"] = 0
+    
     if "password_correct" not in st.session_state:
-        st.text_input("Логин", on_change=password_entered, key="username")
-        st.text_input("Пароль", type="password", on_change=password_entered, key="password")
+        st.session_state["password_correct"] = False
+
+    # Если уже вошли — просто возвращаем True
+    if st.session_state["password_correct"]:
+        return True
+
+    # Если попытки исчерпаны
+    if st.session_state["login_attempts"] >= 3:
+        st.error("🔒 Доступ заблокирован: слишком много неверных попыток. Перезагрузите страницу.")
         return False
-    elif not st.session_state["password_correct"]:
-        st.error("😕 Неверный логин или пароль")
-        return False
-    return True
+
+    # Форма входа
+    st.subheader("Вход в систему")
+    user_input = st.text_input("Логин", key="username_input")
+    pass_input = st.text_input("Пароль", type="password", key="password_input")
+    
+    if st.button("Войти"):
+        # Проверка логина и пароля в секретах
+        if user_input in st.secrets["passwords"] and pass_input == st.secrets["passwords"][user_input]:
+            st.session_state["password_correct"] = True
+            st.session_state["username"] = user_input
+            st.rerun() # Перезапускаем, чтобы убрать форму входа
+        else:
+            st.session_state["login_attempts"] += 1
+            remaining = 3 - st.session_state["login_attempts"]
+            if remaining > 0:
+                st.warning(f"❌ Неверный логин или пароль. Осталось попыток: {remaining}")
+            else:
+                st.error("🔒 Попытки исчерпаны. Доступ заблокирован.")
+    
+    return False
 
 if not check_password():
     st.stop()
-
-role = st.session_state["username"]
 
 # --- ПОДКЛЮЧЕНИЕ К GOOGLE ---
 @st.cache_resource
